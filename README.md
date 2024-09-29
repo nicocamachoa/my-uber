@@ -4,23 +4,20 @@ Este proyecto simula un sistema distribuido tipo Uber con taxis que envían sus 
 
 ## Estructura del Proyecto
 
-my_uber/ ├── servidor_central.py ├── taxi.py └── README.md
-
-markdown
-
+my_uber/ 
+├── servidor_central.py 
+├── taxi.py 
+└── README.md
 
 ## Preparación del Entorno
 
 1. **Requisitos de Python**
-   - Asegúrate de tener Python 3.6 o superior instalado en tu sistema.
+   - Tener Python 3.6 o superior instalado en el sistema.
 
 2. **Instalar ZeroMQ**
-   - Necesitarás instalar la librería `pyzmq` para la comunicación entre procesos:
+   - Instalar la librería `pyzmq` para la comunicación entre procesos:
 
 pip install pyzmq
-
-bash
-
 
 ## Paso 1: Configuración del Proyecto
 
@@ -37,8 +34,6 @@ Paso 2: Ejecutar el Servidor Central
 
 El servidor central debe ser ejecutado en una máquina que pueda recibir conexiones de los taxis.
 
-bash
-
 python servidor_central.py
 
 Esto abrirá dos puertos:
@@ -50,13 +45,11 @@ Paso 3: Configurar y Ejecutar los Taxis
 En la misma máquina o una diferente
 
     Editar taxi.py si el servidor central está en otra máquina:
-        Cambia SERVER_IP en taxi.py a la dirección IP de la máquina donde está corriendo el servidor central.
+        Cambiar SERVER_IP en taxi.py a la dirección IP de la máquina donde está corriendo el servidor central.
 
     Ejecutar taxis
 
-    Abre una nueva terminal por cada taxi que quieras ejecutar y usa el siguiente comando:
-
-    bash
+    Abrir una nueva terminal por cada taxi que se quiera ejecutar y usar el siguiente comando:
 
 python taxi.py <ID> <N> <M> <X> <Y> <Velocidad>
 
@@ -71,8 +64,6 @@ Donde:
 
 Ejemplo:
 
-bash
-
     python taxi.py 1 100 100 10 10 2
 
     Esto ejecutará un taxi con:
@@ -85,24 +76,18 @@ Paso 4: Ejecutar el Sistema en Dos Computadoras
 En la Máquina del Servidor (e.g., IP 192.168.1.10)
 
     Modifica TAXI_POSITION_IP y TAXI_ASSIGN_IP en servidor_central.py para que coincidan con la IP de la máquina del servidor o usa "0.0.0.0" para aceptar conexiones de cualquier IP.
-    Ejecuta el servidor central:
-
-bash
+    Ejecutar el servidor central:
 
 python servidor_central.py
 
 En la Máquina del Taxi
 
-    Cambia la variable SERVER_IP en taxi.py a la IP de la máquina del servidor (e.g., 192.168.1.10).
-    Ejecuta uno o más taxis:
-
-bash
+    Cambiar la variable SERVER_IP en taxi.py a la IP de la máquina del servidor (e.g., 192.168.1.10).
+    Ejecutar uno o más taxis:
 
 python taxi.py <ID> <N> <M> <X> <Y> <Velocidad>
 
 Ejemplo:
-
-bash
 
 python taxi.py 1 100 100 10 10 2
 
@@ -110,4 +95,4 @@ Notas Adicionales
 
     Cada taxi puede hacer un máximo de 3 servicios diarios. Una vez completados, el taxi finalizará su operación.
     La cuadrícula de la ciudad tiene un tamaño N x M, y cada taxi tiene una velocidad que define cuánto se mueve por unidad de tiempo.
-    Asegúrate de ejecutar el servidor central antes de los taxis para que las posiciones y servicios puedan ser correctamente gestionados.
+    Se debe ejecutar el servidor central antes de los taxis para que las posiciones y servicios puedan ser correctamente gestionados.
