@@ -138,7 +138,7 @@ def health_check_respaldo():
 				solicitudes_usuarios.clear()
 			iniciar_como_principal()
 			break
-		time.sleep(5)
+		time.sleep(2)
 
 def responder_health_check():
 	"""El principal responde al health-check del respaldo."""
