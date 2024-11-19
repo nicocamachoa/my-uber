@@ -11,7 +11,8 @@ ESTADISTICAS_ARCHIVO = "estadisticas_usuario.json"
 estadisticas = {
 	"solicitudes_exitosas": 0,
 	"solicitudes_fallidas": 0,
-	"tiempos_respuesta": []
+	"tiempos_respuesta": [],
+	"razones_fallo": []  # Para registrar los motivos de fallos
 }
 
 def guardar_estadisticas():
@@ -34,7 +35,7 @@ def cargar_estadisticas():
 		except (IOError, json.JSONDecodeError) as e:
 			print(f"Error al cargar estadísticas: {e}. Iniciando desde cero.")
 
-def hilo_usuario(id_usuario, posicion, tiempo_espera):
+def hilo_usuario(id_usuario, posicion, tiempo_espera, max_reintentos=3):
 	"""Función que representa el comportamiento de un usuario."""
 	x, y = posicion
 	print(f"Usuario {id_usuario} inicializado en posición ({x}, {y}). Esperará {tiempo_espera} minutos para pedir un taxi.")
@@ -48,36 +49,46 @@ def hilo_usuario(id_usuario, posicion, tiempo_espera):
 	context = zmq.Context()
 	socket = context.socket(zmq.REQ)
 	socket.connect(f"tcp://{SERVER_IP}:{SERVER_PORT}")
-	socket.RCVTIMEO = 5000  # Tiempo de espera máximo en milisegundos (5 segundos)
-
-	# Enviar solicitud al servidor
+	
+	timeout = 5000  # Tiempo inicial en ms
 	mensaje_solicitud = json.dumps({"id_usuario": id_usuario, "x": x, "y": y})
 	tiempo_inicio = time.time()
 
 	try:
-		socket.send_string(mensaje_solicitud)
-		respuesta = json.loads(socket.recv_string())
-		tiempo_respuesta = time.time() - tiempo_inicio
+		for intento in range(max_reintentos):
+			socket.RCVTIMEO = timeout
+			try:
+				# Enviar solicitud al servidor
+				socket.send_string(mensaje_solicitud)
+				respuesta = json.loads(socket.recv_string())
+				tiempo_respuesta = time.time() - tiempo_inicio
 
-		if respuesta["status"] == "asignado":
-			print(f"Usuario {id_usuario} recibió un taxi {respuesta['taxi_id']}. Tiempo de respuesta: {tiempo_respuesta:.2f} segundos.")
-			with lock:
-				estadisticas["solicitudes_exitosas"] += 1
-		else:
-			print(f"Usuario {id_usuario} no recibió un taxi. Respuesta: {respuesta['mensaje']}.")
-			with lock:
-				estadisticas["solicitudes_fallidas"] += 1
+				if respuesta["status"] == "asignado":
+					print(f"Usuario {id_usuario} recibió un taxi {respuesta['taxi_id']}. Tiempo de respuesta: {tiempo_respuesta:.2f} segundos.")
+					with lock:
+						estadisticas["solicitudes_exitosas"] += 1
+				else:
+					print(f"Usuario {id_usuario} no recibió un taxi. Respuesta: {respuesta['mensaje']}.")
+					with lock:
+						estadisticas["solicitudes_fallidas"] += 1
+						estadisticas["razones_fallo"].append(respuesta["mensaje"])
 
-		estadisticas["tiempos_respuesta"].append(tiempo_respuesta)
-
-	except zmq.error.Again:
-		print(f"Usuario {id_usuario} no recibió respuesta del servidor (timeout).")
-		with lock:
-			estadisticas["solicitudes_fallidas"] += 1
+				estadisticas["tiempos_respuesta"].append(tiempo_respuesta)
+				break  # Salir si la solicitud tuvo éxito o fue rechazada
+			except zmq.error.Again:
+				print(f"Usuario {id_usuario}: Timeout en el intento {intento + 1}")
+				if intento == max_reintentos - 1:
+					with lock:
+						estadisticas["solicitudes_fallidas"] += 1
+						estadisticas["razones_fallo"].append("timeout")
+				else:
+					timeout += 2000  # Incrementar el tiempo de espera antes de reintentar
+					time.sleep(1)  # Esperar antes de reintentar
 	finally:
-		guardar_estadisticas()
+		# Cerrar el socket y contexto fuera del bucle
 		socket.close()
 		context.term()
+		guardar_estadisticas()
 
 def generador_usuarios(Y, archivo_coordenadas):
 	"""Crea Y hilos representando a los usuarios."""
@@ -88,11 +99,16 @@ def generador_usuarios(Y, archivo_coordenadas):
 				linea = f.readline().strip()
 				if not linea:  # Si la línea está vacía
 					break
-				x, y = map(int, linea.split(","))
-				tiempo_espera = random.randint(1, 5)  # Tiempo aleatorio en minutos (simulados como segundos)
-				hilo = threading.Thread(target=hilo_usuario, args=(i + 1, (x, y), tiempo_espera))
-				hilos.append(hilo)
-				hilo.start()
+				try:
+					x, y = map(int, linea.split(","))
+					if not (0 <= x <= N and 0 <= y <= M):
+						raise ValueError(f"Coordenadas fuera de rango: ({x}, {y})")
+					tiempo_espera = random.randint(1, 5)  # Tiempo aleatorio en minutos (simulados como segundos)
+					hilo = threading.Thread(target=hilo_usuario, args=(i + 1, (x, y), tiempo_espera))
+					hilos.append(hilo)
+					hilo.start()
+				except ValueError as e:
+					print(f"Error procesando línea '{linea}': {e}")
 	except FileNotFoundError:
 		print(f"Error: El archivo '{archivo_coordenadas}' no existe.")
 		sys.exit(1)
@@ -105,9 +121,15 @@ def generador_usuarios(Y, archivo_coordenadas):
 		hilo.join()
 
 	# Mostrar estadísticas finales
+	tiempo_promedio = sum(estadisticas["tiempos_respuesta"]) / len(estadisticas["tiempos_respuesta"]) if estadisticas["tiempos_respuesta"] else 0
+	porcentaje_fallos = (estadisticas["solicitudes_fallidas"] / max(1, (estadisticas["solicitudes_exitosas"] + estadisticas["solicitudes_fallidas"]))) * 100
+
 	print("Resultados finales:")
 	print(f"Solicitudes exitosas: {estadisticas['solicitudes_exitosas']}")
 	print(f"Solicitudes fallidas: {estadisticas['solicitudes_fallidas']}")
+	print(f"Razones de fallo: {estadisticas['razones_fallo']}")
+	print(f"Tiempo promedio de respuesta: {tiempo_promedio:.2f} segundos")
+	print(f"Porcentaje de solicitudes fallidas: {porcentaje_fallos:.2f}%")
 
 # Parámetros iniciales
 if len(sys.argv) != 5:
