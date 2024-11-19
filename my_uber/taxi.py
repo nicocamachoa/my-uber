@@ -36,10 +36,10 @@ servicios_diarios = 3
 servicios_completados = 0
 posicion_inicial = (x, y)  # Guardar la posición inicial
 
-
 # Intervalo de movimiento en segundos (30 minutos en el sistema)
 intervalo_movimiento = 60 // velocidad  # Moverse cada 30 minutos en función de la velocidad
 ocupado = False  # Indica si el taxi está ocupado con un cliente
+
 
 def mover_taxi():
 	global x, y, ocupado
@@ -47,7 +47,7 @@ def mover_taxi():
 		if velocidad > 0 and not ocupado:
 			# Elegir una dirección de movimiento: 0 para horizontal, 1 para vertical
 			direccion = random.choice([0, 1])
-			desplazamiento = velocidad // 2  # Se mueve 'desplazamiento' celdas cada 30 minutos
+			desplazamiento = random.randint(1, velocidad)
 
 			if direccion == 0:  # Movimiento horizontal
 				if random.choice([True, False]):  # Decidir si moverse a la derecha o izquierda
@@ -62,9 +62,11 @@ def mover_taxi():
 
 			print(f"Taxi {id_taxi} se movió a la posición ({x}, {y})")
 		else:
-			print(f"Taxi {id_taxi} está detenido.")
+			print(f"Taxi {id_taxi} está detenido o ocupado.")
 
 		time.sleep(intervalo_movimiento)  # Esperar hasta el siguiente movimiento
+
+
 def enviar_posiciones():
 	context = zmq.Context()
 	socket = context.socket(zmq.PUB)
@@ -79,38 +81,40 @@ def enviar_posiciones():
 
 	print(f"Taxi {id_taxi} ha completado todos sus servicios diarios.")
 
+
 def recibir_asignaciones():
 	context = zmq.Context()
 	socket = context.socket(zmq.SUB)
 	socket.connect(f"tcp://{SERVER_IP}:{TAXI_ASSIGN_PORT}")
 	socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
-	global servicios_completados, ocupado,x,y
+	global servicios_completados, ocupado, x, y
 
 	while servicios_completados < servicios_diarios:
 		mensaje = socket.recv_string()
-		comando, id_taxi_asignado = mensaje.split(":")
+		id_taxi_asignado, comando = mensaje.split(":")
 
-		if id_taxi_asignado == id_taxi:
+		if id_taxi_asignado == id_taxi and comando == "asignado":
 			print(f"Taxi {id_taxi} recibió asignación de servicio.")
 			with ocupado_lock:
 				ocupado = True
+
 			# Simular que está ocupado por 30 minutos (30 segundos del sistema)
 			time.sleep(30)
 			servicios_completados += 1
 
-			print(f"Taxi {id_taxi} finalizó el servicio. Regresando a la posición inicial {posicion_inicial}...")
+			print(f"Taxi {id_taxi} finalizó el servicio {servicios_completados}. Regresando a la posición inicial {posicion_inicial}...")
 			# Regresar a la posición inicial
 			x, y = posicion_inicial
 			print(f"Taxi {id_taxi} regresó a la posición inicial ({x}, {y}).")
 
 			with ocupado_lock:
 				ocupado = False
-			print(f"Taxi {id_taxi} finalizó el servicio. Servicios completados: {servicios_completados}")
 		else:
-			print(f"Taxi {id_taxi} ignoró mensaje para Taxi {id_taxi_asignado}")
+			print(f"Taxi {id_taxi} ignoró mensaje para Taxi {id_taxi_asignado}.")
 
-	print(f"Taxi {id_taxi} completó todos sus servicios por hoy.")
+	print(f"Taxi {id_taxi} completó todos sus servicios diarios.")
+
 
 if __name__ == "__main__":
 	# Iniciar hilo para enviar posiciones
