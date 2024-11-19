@@ -5,9 +5,6 @@ import sys
 import threading
 import time
 import random
-from threading import Lock
-
-ocupado_lock = Lock()
 
 # Validar argumentos
 if len(sys.argv) != 7:
@@ -34,8 +31,6 @@ TAXI_ASSIGN_PORT = 5556
 # Parámetros de servicio
 servicios_diarios = 3
 servicios_completados = 0
-posicion_inicial = (x, y)  # Guardar la posición inicial
-
 
 # Intervalo de movimiento en segundos (30 minutos en el sistema)
 intervalo_movimiento = 60 // velocidad  # Moverse cada 30 minutos en función de la velocidad
@@ -85,7 +80,7 @@ def recibir_asignaciones():
 	socket.connect(f"tcp://{SERVER_IP}:{TAXI_ASSIGN_PORT}")
 	socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
-	global servicios_completados, ocupado,x,y
+	global servicios_completados
 
 	while servicios_completados < servicios_diarios:
 		mensaje = socket.recv_string()
@@ -93,19 +88,11 @@ def recibir_asignaciones():
 
 		if id_taxi_asignado == id_taxi:
 			print(f"Taxi {id_taxi} recibió asignación de servicio.")
-			with ocupado_lock:
-				ocupado = True
+			ocupado = True
 			# Simular que está ocupado por 30 minutos (30 segundos del sistema)
 			time.sleep(30)
 			servicios_completados += 1
-
-			print(f"Taxi {id_taxi} finalizó el servicio. Regresando a la posición inicial {posicion_inicial}...")
-			# Regresar a la posición inicial
-			x, y = posicion_inicial
-			print(f"Taxi {id_taxi} regresó a la posición inicial ({x}, {y}).")
-
-			with ocupado_lock:
-				ocupado = False
+			ocupado = False
 			print(f"Taxi {id_taxi} finalizó el servicio. Servicios completados: {servicios_completados}")
 		else:
 			print(f"Taxi {id_taxi} ignoró mensaje para Taxi {id_taxi_asignado}")
