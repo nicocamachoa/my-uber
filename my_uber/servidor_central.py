@@ -169,7 +169,7 @@ def recibir_posiciones():
 			guardar_estado()
 
 		print(f"Posición actualizada - Taxi {id_taxi}: {posicion}")
-
+		
 def recibir_solicitudes():
 	"""Recibe solicitudes de usuarios y asigna taxis."""
 	context = zmq.Context()
@@ -185,10 +185,16 @@ def recibir_solicitudes():
 
 		print(f"Solicitud recibida - Usuario {id_usuario}: ({x_usuario}, {y_usuario})")
 
+		# Inicia el cronómetro para medir el tiempo de respuesta
+		tiempo_inicio = time.time()
+
 		with lock:
 			if not taxis_registrados:
-				respuesta = json.dumps({"status": "rechazado", "mensaje": "No hay taxis disponibles."})
+				# No hay taxis disponibles
+				respuesta = {"status": "rechazado", "mensaje": "No hay taxis disponibles."}
+				guardar_historial(id_usuario, None, "rechazado", x_usuario, y_usuario)
 			else:
+				# Buscar el taxi más cercano
 				taxi_asignado = None
 				distancia_minima = float("inf")
 
@@ -199,37 +205,115 @@ def recibir_solicitudes():
 						taxi_asignado = id_taxi
 
 				if taxi_asignado:
-					respuesta = json.dumps({"status": "asignado", "taxi_id": taxi_asignado})
-					del taxis_registrados[taxi_asignado]  # Eliminar taxi asignado
+					# Asignar taxi
+					respuesta = {"status": "asignado", "taxi_id": taxi_asignado}
+					del taxis_registrados[taxi_asignado]
 					guardar_estado()
+					guardar_historial(id_usuario, taxi_asignado, "exitoso", x_usuario, y_usuario)
 				else:
-					respuesta = json.dumps({"status": "rechazado", "mensaje": "No hay taxis disponibles."})
+					# No se pudo asignar taxi
+					respuesta = {"status": "rechazado", "mensaje": "No hay taxis disponibles."}
+					guardar_historial(id_usuario, None, "rechazado", x_usuario, y_usuario)
 
-		socket.send_string(respuesta)
+		# Calcular tiempo de respuesta
+		tiempo_respuesta = time.time() - tiempo_inicio
+		metricas["tiempos_respuesta"].append(tiempo_respuesta)
+
+		# Actualizar métricas
+		if respuesta["status"] == "asignado":
+			metricas["servicios_exitosos"] += 1
+		else:
+			metricas["servicios_rechazados"] += 1
+
+		guardar_metricas()
+
+		# Enviar respuesta al cliente
+		socket.send_json(respuesta)
+
 
 def asignar_servicio():
-    context = zmq.Context()
-    socket = context.socket(zmq.PUB)
-    socket.bind(f"tcp://*:{TAXI_ASSIGN_PORT}")
+	context = zmq.Context()
+	socket = context.socket(zmq.PUB)
+	socket.bind(f"tcp://*:{TAXI_ASSIGN_PORT}")
 
-    while True:
-        with lock:
-            if not solicitudes_usuarios:
-                print("No hay solicitudes pendientes.")
-                time.sleep(1)
-                continue
+	while True:
+		with lock:
+			if not solicitudes_usuarios:
+				print("No hay solicitudes pendientes.")
+				time.sleep(1)
+				continue
 
-            solicitud = solicitudes_usuarios.pop(0)
-            id_usuario = solicitud["id_usuario"]
-            taxi_asignado = solicitud.get("taxi_id")
+			solicitud = solicitudes_usuarios.pop(0)
+			id_usuario = solicitud["id_usuario"]
+			taxi_asignado = solicitud.get("taxi_id")
 
-            if taxi_asignado:
-                mensaje = f"{taxi_asignado}:asignado"
-                socket.send_string(mensaje)
-                print(f"Taxi {taxi_asignado} asignado al usuario {id_usuario}.")
-            else:
-                print(f"No se pudo asignar un taxi para el usuario {id_usuario}.")
-        time.sleep(1)
+			if taxi_asignado:
+				mensaje = f"{taxi_asignado}:asignado"
+				socket.send_string(mensaje)
+				print(f"Taxi {taxi_asignado} asignado al usuario {id_usuario}.")
+			else:
+				print(f"No se pudo asignar un taxi para el usuario {id_usuario}.")
+		time.sleep(1)
+
+HISTORIAL_ARCHIVO = "historial_servidor.json"
+historial = []
+
+def guardar_historial(usuario_id, taxi_id, estado, x_usuario, y_usuario):
+	"""Guarda una entrada de historial en el archivo JSON."""
+	registro = {
+		"usuario_id": usuario_id,
+		"taxi_id": taxi_id,
+		"estado": estado,
+		"posicion_usuario": (x_usuario, y_usuario),
+		"timestamp": time.time()
+	}
+	historial.append(registro)
+	try:
+		with open(HISTORIAL_ARCHIVO, "w") as archivo:
+			json.dump(historial, archivo, indent=4)
+		print(f"Historial actualizado: {registro}")
+	except IOError as e:
+		print(f"Error al guardar historial: {e}")
+
+def cargar_historial():
+	"""Carga el historial del archivo JSON si existe."""
+	global historial
+	if os.path.exists(HISTORIAL_ARCHIVO):
+		try:
+			with open(HISTORIAL_ARCHIVO, "r") as archivo:
+				historial = json.load(archivo)
+				print("Historial cargado desde historial_servidor.json")
+		except (IOError, json.JSONDecodeError) as e:
+			print(f"Error al cargar historial: {e}. Iniciando desde cero.")
+
+
+METRICAS_ARCHIVO = "metricas_servidor.json"
+metricas = {
+	"tiempos_respuesta": [],
+	"servicios_exitosos": 0,
+	"servicios_rechazados": 0
+}
+
+def guardar_metricas():
+	"""Guarda las métricas en un archivo JSON."""
+	try:
+		with open(METRICAS_ARCHIVO, "w") as archivo:
+			json.dump(metricas, archivo, indent=4)
+		print("Métricas actualizadas en metricas_servidor.json")
+	except IOError as e:
+		print(f"Error al guardar métricas: {e}")
+
+def cargar_metricas():
+	"""Carga las métricas de un archivo JSON si existe."""
+	global metricas
+	if os.path.exists(METRICAS_ARCHIVO):
+		try:
+			with open(METRICAS_ARCHIVO, "r") as archivo:
+				metricas = json.load(archivo)
+				print("Métricas cargadas desde metricas_servidor.json")
+		except (IOError, json.JSONDecodeError) as e:
+			print(f"Error al cargar métricas: {e}. Iniciando desde cero.")
+
 
 
 # Inicialización de Roles
@@ -259,7 +343,9 @@ def guardar_estado_periodicamente(intervalo=5):
 
 
 if __name__ == "__main__":
-	cargar_estado()  # Carga el estado al iniciar
+	cargar_estado()     # Carga el estado de taxis y solicitudes
+	cargar_historial()  # Carga el historial de asignaciones
+	cargar_metricas()   # Carga las métricas de rendimiento
 	iniciar_negociacion()
 
 	if ROL == "principal":
