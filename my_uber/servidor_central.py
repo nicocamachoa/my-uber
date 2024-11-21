@@ -6,10 +6,24 @@ import time
 import json
 import math
 import os
+import socket
 
 # Configuración de ZeroMQ
 
-SERVER_IP = "127.0.0.1"
+def get_local_ip():
+    """Obtain the actual IP address of the server."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # Doesn't matter if the address is reachable
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+
+SERVER_IP = get_local_ip()
 SERVER_PORT = 5557
 SERVERS = ["10.43.100.133", "10.43.101.2"]
 
@@ -81,11 +95,11 @@ def calcular_distancia(x1, y1, x2, y2):
 # Funciones de Negociación y Roles
 def iniciar_negociacion():
 	print("Iniciando negociación de roles...", flush=True)
-	global ROL
-	"""Determina si este servidor será el principal o el respaldo."""
-	ROL = "principal"  # Valor por defecto
-	socket = context.socket(zmq.REQ)
-	socket.setsockopt(zmq.RCVTIMEO, 2000)  # Espera de 2 segundos
+    global ROL, primary_server_ip
+    ROL = "principal"  # Default to principal
+    primary_server_ip = None
+    socket = context.socket(zmq.REQ)
+    socket.setsockopt(zmq.RCVTIMEO, 2000)  # 2-second timeout
 	
 	# Intentar conectarse a otros servidores para verificar si hay un principal
 	for server in SERVERS:
@@ -166,35 +180,34 @@ def sincronizar_estado_principal():
 			break
 
 def recibir_estado_respaldo():
-	"""El respaldo escucha y guarda el estado del principal."""
-	print("Iniciando recepción de estado como respaldo...", flush=True)
-	socket = context.socket(zmq.PULL)
-	
-	# Conectarse al ESTADO_SYNC_PORT de todos los servidores conocidos excepto a sí mismo
-	for server in SERVERS:
-		if server == SERVER_IP:
-			continue  # No intentar conectarse a sí mismo
-		estado_sync_address = f"tcp://{server}:{ESTADO_SYNC_PORT}"
-		try:
-			socket.connect(estado_sync_address)
-			print(f"Servidor respaldo conectado a {estado_sync_address} para recibir estado.", flush=True)
-		except zmq.error.ZMQError as e:
-			print(f"Error al conectar a {estado_sync_address} para recibir estado: {e}", flush=True)
-	
-	global taxis_registrados, solicitudes_usuarios
-	while True:
-		try:
-			print("Esperando estado sincronizado desde el principal...", flush=True)
-			estado = socket.recv_json()
-			print(f"Estado recibido para sincronizar: {estado}", flush=True)
-			with lock:
-				taxis_registrados = estado.get("taxis", {})
-				solicitudes_usuarios = estado.get("solicitudes", [])
-				print(f"Taxis registrados actualizados: {taxis_registrados}", flush=True)
-				print(f"Solicitudes de usuarios actualizadas: {solicitudes_usuarios}", flush=True)
-		except Exception as e:
-			print(f"Error al recibir estado de respaldo: {e}", flush=True)
-			break
+    """El respaldo escucha y guarda el estado del principal."""
+    print("Iniciando recepción de estado como respaldo...", flush=True)
+    socket = context.socket(zmq.PULL)
+    
+    # Conectarse únicamente al principal
+    principal_ip = "10.43.100.133"  # Actualiza esto según tu configuración
+    estado_sync_address = f"tcp://{principal_ip}:{ESTADO_SYNC_PORT}"
+    try:
+        socket.connect(estado_sync_address)
+        print(f"Servidor respaldo conectado a {estado_sync_address} para recibir estado.", flush=True)
+    except zmq.error.ZMQError as e:
+        print(f"Error al conectar a {estado_sync_address} para recibir estado: {e}", flush=True)
+    
+    global taxis_registrados, solicitudes_usuarios
+    while True:
+        try:
+            print("Esperando estado sincronizado desde el principal...", flush=True)
+            estado = socket.recv_json()
+            print(f"Estado recibido para sincronizar: {estado}", flush=True)
+            with lock:
+                taxis_registrados = estado.get("taxis", {})
+                solicitudes_usuarios = estado.get("solicitudes", [])
+                print(f"Taxis registrados actualizados: {taxis_registrados}", flush=True)
+                print(f"Solicitudes de usuarios actualizadas: {solicitudes_usuarios}", flush=True)
+        except Exception as e:
+            print(f"Error al recibir estado de respaldo: {e}", flush=True)
+            break
+
 
 
 # Funciones de Health-Check
