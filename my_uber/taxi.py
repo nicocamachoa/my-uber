@@ -84,7 +84,8 @@ if not (0 <= x <= N and 0 <= y <= M):
     sys.exit(1)
 
 # Dirección IP y puerto del servidor central
-SERVER_IP = "127.0.0.1"
+# Dirección IP de los servidores
+SERVERS = ["10.43.100.133", "10.43.101.2"]
 TAXI_POSITION_PORT = 5555
 TAXI_ASSIGN_PORT = 5556
 
@@ -134,81 +135,107 @@ def enviar_posiciones():
     context = zmq.Context()
     socket = context.socket(zmq.PUSH)
     intentos = 0
-    try:
-        socket.connect(f"tcp://{SERVER_IP}:{TAXI_POSITION_PORT}")
-        print(f"Taxi {id_taxi} enviando posiciones a tcp://{SERVER_IP}:{TAXI_POSITION_PORT}", flush=True)
-    except zmq.error.ZMQError as e:
-        print(f"Error al conectar con el servidor para enviar posiciones: {e}", flush=True)
-        sys.exit(1)
-
+    max_reintentos = 5
+    intervalos_espera = 5  # Espera de 5 segundos entre intentos
+    
     while servicios_completados < servicios_diarios:
-        try:
-            posicion = f"({x},{y})"
-            mensaje = f"{id_taxi}:{posicion}"
-            socket.send_string(mensaje)
-            print(f"Taxi {id_taxi} envió su posición: {posicion}", flush=True)
+        conectado = False
+        for server_ip in SERVERS:
+            try:
+                socket.connect(f"tcp://{server_ip}:{TAXI_POSITION_PORT}")
+                print(f"Taxi {id_taxi} enviando posiciones a tcp://{server_ip}:{TAXI_POSITION_PORT}", flush=True)
+                posicion = f"({x},{y})"
+                mensaje = f"{id_taxi}:{posicion}"
+                socket.send_string(mensaje)
+                print(f"Taxi {id_taxi} envió su posición: {posicion}", flush=True)
+                socket.disconnect(f"tcp://{server_ip}:{TAXI_POSITION_PORT}")
+                conectado = True
+                break  # Salir del loop si se conecta exitosamente
+            except zmq.error.ZMQError as e:
+                print(f"Error enviando posiciones a {server_ip}:{TAXI_POSITION_PORT}: {e}", flush=True)
+                socket.disconnect(f"tcp://{server_ip}:{TAXI_POSITION_PORT}")
+                continue  # Intentar con el siguiente servidor
+            except Exception as e:
+                print(f"Error en enviar_posiciones: {e}", flush=True)
+                socket.disconnect(f"tcp://{server_ip}:{TAXI_POSITION_PORT}")
+                continue  # Intentar con el siguiente servidor
+        
+        if conectado:
             time.sleep(intervalo_movimiento)
-        except zmq.error.ZMQError as e:
-            print(f"Error enviando posiciones: {e}", flush=True)
+        else:
             intentos += 1
-            if intentos > 5:  # Limitar a 5 intentos, por ejemplo
-                print("Error persistente, terminando la ejecución.", flush=True)
+            if intentos > max_reintentos:
+                print("Error persistente al enviar posiciones. Terminando la ejecución.", flush=True)
                 break
-            time.sleep(5)
-        except Exception as e:
-            print(f"Error en enviar_posiciones: {e}", flush=True)
-            break
-
+            print(f"Taxi {id_taxi}: No pudo conectar a ningún servidor. Reintentando en {intervalos_espera} segundos.", flush=True)
+            time.sleep(intervalos_espera)
+    
     print(f"Taxi {id_taxi} ha completado todos sus servicios diarios.", flush=True)
     socket.close()
+
 
 def recibir_asignaciones():
     """Recibe asignaciones de servicios del servidor central."""
     context = zmq.Context()
     socket = context.socket(zmq.SUB)
     socket.setsockopt_string(zmq.SUBSCRIBE, "")
-    try:
-        socket.connect(f"tcp://{SERVER_IP}:{TAXI_ASSIGN_PORT}")
-        print(f"Taxi {id_taxi} suscrito a asignaciones en tcp://{SERVER_IP}:{TAXI_ASSIGN_PORT}", flush=True)
-    except zmq.error.ZMQError as e:
-        print(f"Error al conectar con el servidor para recibir asignaciones: {e}", flush=True)
-        sys.exit(1)
-
-    global servicios_completados, ocupado, x, y, tiempo_ocupado, tiempo_libre, ultimo_cambio_estado
+    
     while servicios_completados < servicios_diarios:
-        try:
-            mensaje = socket.recv_string()
-            print(f"Taxi {id_taxi} recibió mensaje: {mensaje}", flush=True)
-            id_taxi_asignado, comando = mensaje.split(":")
-            if id_taxi_asignado == id_taxi and comando == "asignado":
-                print(f"Taxi {id_taxi} recibió asignación de servicio.", flush=True)
-                with ocupado_lock:
-                    tiempo_libre += time.time() - ultimo_cambio_estado
+        conectado = False
+        for server_ip in SERVERS:
+            try:
+                socket.connect(f"tcp://{server_ip}:{TAXI_ASSIGN_PORT}")
+                print(f"Taxi {id_taxi} suscrito a asignaciones en tcp://{server_ip}:{TAXI_ASSIGN_PORT}", flush=True)
+                conectado = True
+                break  # Salir del loop si se conecta exitosamente
+            except zmq.error.ZMQError as e:
+                print(f"Error conectando a {server_ip}:{TAXI_ASSIGN_PORT} para recibir asignaciones: {e}", flush=True)
+                socket.disconnect(f"tcp://{server_ip}:{TAXI_ASSIGN_PORT}")
+                continue  # Intentar con el siguiente servidor
+            except Exception as e:
+                print(f"Error en recibir_asignaciones: {e}", flush=True)
+                socket.disconnect(f"tcp://{server_ip}:{TAXI_ASSIGN_PORT}")
+                continue  # Intentar con el siguiente servidor
+        
+        if conectado:
+            try:
+                mensaje = socket.recv_string()
+                print(f"Taxi {id_taxi} recibió mensaje: {mensaje}", flush=True)
+                id_taxi_asignado, comando = mensaje.split(":")
+                if id_taxi_asignado == id_taxi and comando.strip().lower() == "asignado":
+                    print(f"Taxi {id_taxi} recibió asignación de servicio.", flush=True)
+                    with ocupado_lock:
+                        tiempo_libre += time.time() - ultimo_cambio_estado
+                        ultimo_cambio_estado = time.time()
+                        ocupado = True
+
+                    # Simular servicio
+                    print(f"Taxi {id_taxi} iniciando servicio...", flush=True)
+                    time.sleep(30)  # Simular servicio (30 segundos para pruebas)
+                    tiempo_ocupado += time.time() - ultimo_cambio_estado
                     ultimo_cambio_estado = time.time()
-                    ocupado = True
+                    with ocupado_lock:
+                        servicios_completados += 1
+                    print(f"Taxi {id_taxi} finalizó el servicio {servicios_completados}. Regresando a la posición inicial {posicion_inicial}...", flush=True)
+                    x, y = posicion_inicial
+                    movimiento_historial.append({"id_taxi": id_taxi, "posicion": posicion_inicial, "timestamp": time.time()})
+                    guardar_movimiento_historial()
 
-                # Simular servicio
-                print(f"Taxi {id_taxi} iniciando servicio...", flush=True)
-                time.sleep(30)  # Simular servicio (30 segundos para pruebas)
-                tiempo_ocupado += time.time() - ultimo_cambio_estado
-                ultimo_cambio_estado = time.time()
-                with ocupado_lock:
-                    servicios_completados += 1
-                print(f"Taxi {id_taxi} finalizó el servicio {servicios_completados}. Regresando a la posición inicial {posicion_inicial}...", flush=True)
-                x, y = posicion_inicial
-                movimiento_historial.append({"id_taxi": id_taxi, "posicion": posicion_inicial, "timestamp": time.time()})
-                guardar_movimiento_historial()
-
-                with ocupado_lock:
-                    ocupado = False
-            else:
-                print(f"Taxi {id_taxi} ignoró mensaje para Taxi {id_taxi_asignado}.", flush=True)
-        except zmq.error.ZMQError as e:
-            print(f"Error recibiendo asignaciones: {e}", flush=True)
-            time.sleep(5)
-        except Exception as e:
-            print(f"Error en recibir_asignaciones: {e}", flush=True)
-            break
+                    with ocupado_lock:
+                        ocupado = False
+                else:
+                    print(f"Taxi {id_taxi} ignoró mensaje para Taxi {id_taxi_asignado}.", flush=True)
+            except zmq.error.Again:
+                print(f"Taxi {id_taxi}: Timeout esperando asignaciones.", flush=True)
+            except Exception as e:
+                print(f"Error en recibir_asignaciones: {e}", flush=True)
+        else:
+            intentos += 1
+            if intentos > max_reintentos:
+                print("Error persistente al recibir asignaciones. Terminando la ejecución.", flush=True)
+                break
+            print(f"Taxi {id_taxi}: No pudo conectar a ningún servidor para asignaciones. Reintentando en {intervalos_espera} segundos.", flush=True)
+            time.sleep(intervalos_espera)
 
     print(f"Taxi {id_taxi} completó todos sus servicios diarios.", flush=True)
     guardar_metricas()  # Guardar métricas al finalizar
@@ -216,6 +243,7 @@ def recibir_asignaciones():
     print(f"Tiempo total ocupado: {tiempo_ocupado:.2f} segundos", flush=True)
     print(f"Tiempo total libre: {tiempo_libre:.2f} segundos", flush=True)
     socket.close()
+
 
 if __name__ == "__main__":
     cargar_movimiento_historial()
