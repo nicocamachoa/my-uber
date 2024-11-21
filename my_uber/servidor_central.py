@@ -6,26 +6,11 @@ import time
 import json
 import math
 import os
-import socket
 
 # Configuración de ZeroMQ
 
-def get_local_ip():
-    """Obtain the actual IP address of the server."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        # Doesn't matter if the address is reachable
-        s.connect(('10.255.255.255', 1))
-        IP = s.getsockname()[0]
-    except Exception:
-        IP = '127.0.0.1'
-    finally:
-        s.close()
-    return IP
-
-SERVER_IP = get_local_ip()
+SERVER_IP = "127.0.0.1"
 SERVER_PORT = 5557
-SERVERS = ["10.43.100.133", "10.43.101.2"]
 
 # Puerto para recepción de posiciones de taxis
 TAXI_POSITION_PORT = 5555
@@ -95,48 +80,44 @@ def calcular_distancia(x1, y1, x2, y2):
 # Funciones de Negociación y Roles
 def iniciar_negociacion():
 	print("Iniciando negociación de roles...", flush=True)
-    global ROL, primary_server_ip
-    ROL = "principal"  # Default to principal
-    primary_server_ip = None
-    socket = context.socket(zmq.REQ)
-    socket.setsockopt(zmq.RCVTIMEO, 2000)  # 2-second timeout
-	
-	# Intentar conectarse a otros servidores para verificar si hay un principal
-	for server in SERVERS:
-		if server == SERVER_IP:
-			continue  # No intentar conectarse a sí mismo
-		discovery_address = f"tcp://{server}:{DISCOVERY_PORT}"
-		try:
-			print(f"Intentando conectarse a {discovery_address} para verificar principal...", flush=True)
-			socket.connect(discovery_address)
-			print("Enviando solicitud de principal...", flush=True)
-			socket.send_string("¿Hay un principal?")
-			print("Solicitud enviada. Esperando respuesta...", flush=True)
-			respuesta = socket.recv_string()
-			print(f"Respuesta recibida de {server}: {respuesta}", flush=True)
-			if respuesta.strip().lower() == "sí":
-				ROL = "respaldo"
-				print("Asignado rol: RESPALDO", flush=True)
-				break  # No es necesario verificar más servidores
-			socket.disconnect(discovery_address)
-		except zmq.error.Again:
-			print(f"No se pudo conectar a {discovery_address}. Continuando con la verificación...", flush=True)
-			socket.disconnect(discovery_address)
-		except Exception as e:
-			print(f"Error al conectarse a {discovery_address}: {e}", flush=True)
-			socket.disconnect(discovery_address)
-	
-	if ROL == "principal":
-		print("No se encontró un servidor principal existente. Asignado rol: PRINCIPAL", flush=True)
-	elif ROL == "respaldo":
-		print("Asignado rol: RESPALDO", flush=True)
-	else:
-		print("Rol no asignado correctamente. Verifica la negociación de roles.", flush=True)
-	
-	# Cerrar el socket de negociación
-	socket.close()
-	print("Cerrando socket de negociación.", flush=True)
+	global ROL
+	"""Determina si este servidor será el principal o el respaldo."""
+	socket = context.socket(zmq.REQ)
+	socket.setsockopt(zmq.RCVTIMEO, 2000)  # Espera de 2 segundos
+	socket.connect(f"tcp://localhost:{DISCOVERY_PORT}")
+	print(f"Conectado al puerto de descubrimiento en tcp://localhost:{DISCOVERY_PORT}", flush=True)
 
+	try:
+		print("Enviando solicitud de principal...", flush=True)
+		socket.send_string("¿Hay un principal?")
+		print("Solicitud enviada. Esperando respuesta...", flush=True)
+		respuesta = socket.recv_string()
+		print(f"Respuesta recibida: {respuesta}", flush=True)
+		if respuesta == "Sí":
+			print("Se confirmó que ya existe un servidor principal.", flush=True)
+			ROL = "respaldo"
+			print("Asignado rol: RESPALDO", flush=True)
+		else:
+			print("No se encontró un servidor principal.", flush=True)
+			ROL = "principal"
+			print("Asignado rol: PRINCIPAL", flush=True)
+	except zmq.error.Again as e:
+		print(f"Timeout o error en la comunicación: {e}", flush=True)
+		# Si no hay respuesta, asume que eres el primero
+		ROL = "principal"
+		print("Asumiendo rol principal por falta de respuesta.", flush=True)
+	except Exception as e:
+		print(f"Error inesperado durante la negociación: {e}", flush=True)
+		ROL = "principal"
+		print("Asumiendo rol principal debido a un error inesperado.", flush=True)
+	finally:
+		print("Cerrando socket de negociación.", flush=True)
+		try:
+			socket.close()
+			print("Socket cerrado exitosamente.", flush=True)
+		except Exception as e:
+			print(f"Error al cerrar socket: {e}", flush=True)
+		print("Cierre del socket de negociación completado.", flush=True)
 
 def publicar_presencia():
 	"""El principal anuncia su presencia periódicamente."""
@@ -165,9 +146,8 @@ def sincronizar_estado_principal():
 	"""El principal envía el estado a los respaldos."""
 	print("Iniciando sincronización de estado como principal...", flush=True)
 	socket = context.socket(zmq.PUSH)
-	estado_sync_address = f"tcp://*:{ESTADO_SYNC_PORT}"
-	socket.bind(estado_sync_address)
-	print(f"Servidor principal enviando estado a {estado_sync_address}", flush=True)
+	socket.bind(f"tcp://*:{ESTADO_SYNC_PORT}")
+	print(f"Servidor principal enviando estado a tcp://*:{ESTADO_SYNC_PORT}", flush=True)
 
 	while True:
 		try:
@@ -180,53 +160,35 @@ def sincronizar_estado_principal():
 			break
 
 def recibir_estado_respaldo():
-    """El respaldo escucha y guarda el estado del principal."""
-    print("Iniciando recepción de estado como respaldo...", flush=True)
-    socket = context.socket(zmq.PULL)
-    
-    # Conectarse únicamente al principal
-    principal_ip = "10.43.100.133"  # Actualiza esto según tu configuración
-    estado_sync_address = f"tcp://{principal_ip}:{ESTADO_SYNC_PORT}"
-    try:
-        socket.connect(estado_sync_address)
-        print(f"Servidor respaldo conectado a {estado_sync_address} para recibir estado.", flush=True)
-    except zmq.error.ZMQError as e:
-        print(f"Error al conectar a {estado_sync_address} para recibir estado: {e}", flush=True)
-    
-    global taxis_registrados, solicitudes_usuarios
-    while True:
-        try:
-            print("Esperando estado sincronizado desde el principal...", flush=True)
-            estado = socket.recv_json()
-            print(f"Estado recibido para sincronizar: {estado}", flush=True)
-            with lock:
-                taxis_registrados = estado.get("taxis", {})
-                solicitudes_usuarios = estado.get("solicitudes", [])
-                print(f"Taxis registrados actualizados: {taxis_registrados}", flush=True)
-                print(f"Solicitudes de usuarios actualizadas: {solicitudes_usuarios}", flush=True)
-        except Exception as e:
-            print(f"Error al recibir estado de respaldo: {e}", flush=True)
-            break
+	"""El respaldo escucha y guarda el estado del principal."""
+	print("Iniciando recepción de estado como respaldo...", flush=True)
+	socket = context.socket(zmq.PULL)
+	socket.connect(f"tcp://localhost:{ESTADO_SYNC_PORT}")
+	print(f"Servidor respaldo conectado a tcp://localhost:{ESTADO_SYNC_PORT} para recibir estado.", flush=True)
 
-
+	global taxis_registrados, solicitudes_usuarios
+	while True:
+		try:
+			print("Esperando estado sincronizado desde el principal...", flush=True)
+			estado = socket.recv_json()
+			print(f"Estado recibido para sincronizar: {estado}", flush=True)
+			with lock:
+				taxis_registrados = estado.get("taxis", {})
+				solicitudes_usuarios = estado.get("solicitudes", [])
+				print(f"Taxis registrados actualizados: {taxis_registrados}", flush=True)
+				print(f"Solicitudes de usuarios actualizadas: {solicitudes_usuarios}", flush=True)
+		except Exception as e:
+			print(f"Error al recibir estado de respaldo: {e}", flush=True)
+			break
 
 # Funciones de Health-Check
 def health_check_respaldo():
 	print("Iniciando health-check como respaldo...", flush=True)
 	socket = context.socket(zmq.REQ)
 	socket.setsockopt(zmq.RCVTIMEO, 2000)  # Timeout de 2 segundos
-	
-	# Conectarse al HEALTH_CHECK_PORT de todos los servidores conocidos excepto a sí mismo
-	for server in SERVERS:
-		if server == SERVER_IP:
-			continue  # No intentar conectarse a sí mismo
-		health_check_address = f"tcp://{server}:{HEALTH_CHECK_PORT}"
-		try:
-			socket.connect(health_check_address)
-			print(f"Servidor respaldo conectado a {health_check_address} para health-check.", flush=True)
-		except zmq.error.ZMQError as e:
-			print(f"Error al conectar a {health_check_address} para health-check: {e}", flush=True)
-	
+	socket.connect(f"tcp://localhost:{HEALTH_CHECK_PORT}")
+	print(f"Servidor respaldo conectado a tcp://localhost:{HEALTH_CHECK_PORT} para health-check.", flush=True)
+
 	while True:
 		try:
 			print("Enviando 'ping' al servidor principal...", flush=True)
@@ -234,7 +196,7 @@ def health_check_respaldo():
 			print("Esperando respuesta 'pong' del principal...", flush=True)
 			respuesta = socket.recv_string()
 			print(f"Respuesta de health-check recibida: {respuesta}", flush=True)
-			if respuesta.strip().lower() != "pong":
+			if respuesta != "pong":
 				print("Respuesta inesperada del servidor principal.", flush=True)
 				raise Exception("Respuesta inesperada en health-check.")
 			else:
@@ -242,7 +204,7 @@ def health_check_respaldo():
 		except zmq.error.Again as e:
 			print(f"Timeout o error en health-check: {e}", flush=True)
 			print("El servidor principal ha fallado. Asumiendo control como principal.", flush=True)
-			# Actualizar el rol antes de iniciar funciones principales
+			# Update the role before starting principal services
 			global ROL
 			ROL = "principal"
 			print(f"Nuevo rol asignado: {ROL}", flush=True)
@@ -257,7 +219,6 @@ def health_check_respaldo():
 			break
 		time.sleep(2)
 
-
 def responder_health_check():
 	"""El principal responde al health-check del respaldo."""
 	print("Iniciando respuesta a health-check como principal...", flush=True)
@@ -270,7 +231,7 @@ def responder_health_check():
 			print("Esperando 'ping' para health-check...", flush=True)
 			mensaje = socket.recv_string()
 			print(f"Mensaje de health-check recibido: {mensaje}", flush=True)
-			if mensaje.strip().lower() == "ping":
+			if mensaje == "ping":
 				print("Enviando respuesta 'pong' al health-check.", flush=True)
 				socket.send_string("pong")
 			else:
