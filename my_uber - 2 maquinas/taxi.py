@@ -20,6 +20,7 @@ ultimo_cambio_estado = time.time()  # Marca de tiempo del último cambio de esta
 
 METRICAS_ARCHIVO = "metricas_taxi.json"
 metricas = {"tiempo_ocupado": 0, "tiempo_libre": 0}
+HEALTH_CHECK_PORT = 5562  # Puerto para health-check
 
 def guardar_metricas():
 	"""Guarda las métricas de tiempo en un archivo JSON."""
@@ -129,49 +130,100 @@ def mover_taxi():
 			print(f"Taxi {id_taxi} está detenido o ocupado.", flush=True)
 
 		time.sleep(intervalo_movimiento)
+		
+def detectar_servidor_principal():
+	"""Determina cuál servidor está activo realizando un health-check."""
+	for server_ip in SERVERS:
+		print(f"Detectando servidor activo en {server_ip}...", flush=True)
+		try:
+			context = zmq.Context()
+			socket = context.socket(zmq.REQ)
+			socket.setsockopt(zmq.RCVTIMEO, 2000)  # Timeout de 2 segundos
+			socket.connect(f"tcp://{server_ip}:{HEALTH_CHECK_PORT}")
+			socket.send_string("ping")
+			respuesta = socket.recv_string()
+			if respuesta.strip().lower() == "pong":
+				print(f"Servidor activo detectado: {server_ip}", flush=True)
+				socket.close()
+				return server_ip
+			socket.close()
+		except zmq.error.Again:
+			print(f"Servidor {server_ip} no respondió al health-check.", flush=True)
+		except Exception as e:
+			print(f"Error al verificar servidor {server_ip}: {e}", flush=True)
+	print("No se pudo detectar un servidor activo.", flush=True)
+	return None
+
+def enviar_posiciones():
+	context = zmq.Context()
+	"""Envía la posición del taxi al servidor central periódicamente."""
+	while servicios_completados < servicios_diarios:
+		servidor_activo = detectar_servidor_principal()
+		if not servidor_activo:
+			print("No hay servidores disponibles. Reintentando en 5 segundos...", flush=True)
+			time.sleep(5)
+			continue
+
+		try:
+			# Cerrar conexión previa si existe
+			if socket:
+				socket.close()
+			context = zmq.Context()
+			socket = context.socket(zmq.PUSH)
+			socket.connect(f"tcp://{servidor_activo}:{TAXI_POSITION_PORT}")
+			posicion = f"({x},{y})"
+			mensaje = f"{id_taxi}:{posicion}"
+			socket.send_string(mensaje)
+			print(f"Taxi {id_taxi} envió su posición: {posicion} a {servidor_activo}", flush=True)
+			socket.disconnect(f"tcp://{servidor_activo}:{TAXI_POSITION_PORT}")
+		except zmq.error.ZMQError as e:
+			print(f"Error al enviar posición al servidor {servidor_activo}: {e}", flush=True)
+		except Exception as e:
+			print(f"Error inesperado al enviar posición: {e}", flush=True)
+		time.sleep(intervalo_movimiento)
 
 def enviar_posiciones():
 	"""Envía la posición del taxi al servidor central periódicamente."""
 	context = zmq.Context()
-	socket = context.socket(zmq.PUSH)
 	intentos = 0
 	max_reintentos = 5
 	intervalos_espera = 5  # Espera de 5 segundos entre intentos
-	
+
 	while servicios_completados < servicios_diarios:
-		conectado = False
-		for server_ip in SERVERS:
-			try:
-				socket.connect(f"tcp://{server_ip}:{TAXI_POSITION_PORT}")
-				print(f"Taxi {id_taxi} enviando posiciones a tcp://{server_ip}:{TAXI_POSITION_PORT}", flush=True)
-				posicion = f"({x},{y})"
-				mensaje = f"{id_taxi}:{posicion}"
-				socket.send_string(mensaje)
-				print(f"Taxi {id_taxi} envió su posición: {posicion}", flush=True)
-				socket.disconnect(f"tcp://{server_ip}:{TAXI_POSITION_PORT}")
-				conectado = True
-				break  # Salir del loop si se conecta exitosamente
-			except zmq.error.ZMQError as e:
-				print(f"Error enviando posiciones a {server_ip}:{TAXI_POSITION_PORT}: {e}", flush=True)
-				socket.disconnect(f"tcp://{server_ip}:{TAXI_POSITION_PORT}")
-				continue  # Intentar con el siguiente servidor
-			except Exception as e:
-				print(f"Error en enviar_posiciones: {e}", flush=True)
-				socket.disconnect(f"tcp://{server_ip}:{TAXI_POSITION_PORT}")
-				continue  # Intentar con el siguiente servidor
-		
-		if conectado:
-			time.sleep(intervalo_movimiento)
-		else:
+		# Detectar cuál servidor está activo
+		servidor_activo = detectar_servidor_principal()
+		if not servidor_activo:
+			print(f"Taxi {id_taxi}: No hay servidores disponibles. Reintentando en {intervalos_espera} segundos...", flush=True)
+			time.sleep(intervalos_espera)
 			intentos += 1
 			if intentos > max_reintentos:
-				print("Error persistente al enviar posiciones. Terminando la ejecución.", flush=True)
+				print("Error persistente al detectar servidor activo. Terminando la ejecución.", flush=True)
 				break
-			print(f"Taxi {id_taxi}: No pudo conectar a ningún servidor. Reintentando en {intervalos_espera} segundos.", flush=True)
-			time.sleep(intervalos_espera)
-	
+			continue
+
+		try:
+			# Conectarse al servidor activo y enviar la posición
+			socket = context.socket(zmq.PUSH)
+			socket.connect(f"tcp://{servidor_activo}:{TAXI_POSITION_PORT}")
+			print(f"Taxi {id_taxi} enviando posiciones a tcp://{servidor_activo}:{TAXI_POSITION_PORT}", flush=True)
+			posicion = f"({x},{y})"
+			mensaje = f"{id_taxi}:{posicion}"
+			socket.send_string(mensaje)
+			print(f"Taxi {id_taxi} envió su posición: {posicion} a {servidor_activo}", flush=True)
+			socket.disconnect(f"tcp://{servidor_activo}:{TAXI_POSITION_PORT}")
+			intentos = 0  # Resetear el contador de intentos tras un envío exitoso
+		except zmq.error.ZMQError as e:
+			print(f"Error al enviar posición al servidor {servidor_activo}: {e}", flush=True)
+		except Exception as e:
+			print(f"Error inesperado al enviar posición: {e}", flush=True)
+		finally:
+			socket.close()
+
+		# Esperar antes de enviar la próxima posición
+		time.sleep(intervalo_movimiento)
+
 	print(f"Taxi {id_taxi} ha completado todos sus servicios diarios.", flush=True)
-	socket.close()
+
 
 
 def recibir_asignaciones():
@@ -179,6 +231,7 @@ def recibir_asignaciones():
 	context = zmq.Context()
 	socket = context.socket(zmq.SUB)
 	socket.setsockopt_string(zmq.SUBSCRIBE, "")
+	global servicios_completados
 	
 	while servicios_completados < servicios_diarios:
 		conectado = False
